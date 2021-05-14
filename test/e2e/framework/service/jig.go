@@ -984,13 +984,13 @@ func (j *TestJig) checkExternalServiceReachability(svc *v1.Service, pod *v1.Pod)
 	// NOTE(claudiub): Windows does not support PQDN.
 	svcName := fmt.Sprintf("%s.%s.svc.%s", svc.Name, svc.Namespace, framework.TestContext.ClusterDNSDomain)
 	// Service must resolve to IP
-	cmd := fmt.Sprintf("nslookup %s", svcName)
+	cmd := fmt.Sprintf("nslookup %s.%s", svcName, svc.Namespace)
 	return wait.PollImmediate(framework.Poll, ServiceReachabilityShortPollTimeout, func() (done bool, err error) {
 		_, stderr, err := framework.RunHostCmdWithFullOutput(pod.Namespace, pod.Name, cmd)
 		// NOTE(claudiub): nslookup may return 0 on Windows, even though the DNS name was not found. In this case,
 		// we can check stderr for the error.
 		if err != nil || (framework.NodeOSDistroIs("windows") && strings.Contains(stderr, fmt.Sprintf("can't find %s", svcName))) {
-			framework.Logf("ExternalName service %q failed to resolve to IP", pod.Namespace+"/"+pod.Name)
+			framework.Logf("ExternalName service %q failed to resolve to IP: %v", pod.Namespace+"/"+pod.Name, err)
 			return false, nil
 		}
 		return true, nil
