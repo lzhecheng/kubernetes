@@ -18,27 +18,21 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
-	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	fakecloud "k8s.io/cloud-provider/fake"
@@ -46,13 +40,18 @@ import (
 	utilpointer "k8s.io/utils/pointer"
 )
 
-const region = "us-central"
+const (
+	region = "us-central"
+
+	defaultService = "external-balancer"
+	defaultNS      = "default"
+)
 
 func newService(name string, uid types.UID, serviceType v1.ServiceType) *v1.Service {
 	return &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "default",
+			Namespace: defaultNS,
 			UID:       uid,
 		},
 		Spec: v1.ServiceSpec{
@@ -63,7 +62,7 @@ func newService(name string, uid types.UID, serviceType v1.ServiceType) *v1.Serv
 
 //Wrap newService so that you don't have to call default arguments again and again.
 func defaultExternalService() *v1.Service {
-	return newService("external-balancer", types.UID("123"), v1.ServiceTypeLoadBalancer)
+	return newService(defaultService, types.UID("123"), v1.ServiceTypeLoadBalancer)
 }
 
 func alwaysReady() bool { return true }
@@ -86,7 +85,6 @@ func newController() (*Controller, *fakecloud.Cloud, *fake.Clientset) {
 		knownHosts:       []*v1.Node{},
 		kubeClient:       kubeClient,
 		clusterName:      "test-cluster",
-		cache:            &serviceCache{serviceMap: make(map[string]*cachedService)},
 		eventBroadcaster: broadcaster,
 		eventRecorder:    recorder,
 		nodeLister:       newFakeNodeLister(nil),
@@ -128,7 +126,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "no-external-balancer",
-					Namespace: "default",
+					Namespace: defaultNS,
 				},
 				Spec: v1.ServiceSpec{
 					Type: v1.ServiceTypeClusterIP,
@@ -142,7 +140,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "no-external-balancer",
-					Namespace: "default",
+					Namespace: defaultNS,
 				},
 				Spec: v1.ServiceSpec{
 					Type: v1.ServiceTypeClusterIP,
@@ -165,7 +163,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "udp-service",
-					Namespace: "default",
+					Namespace: defaultNS,
 				},
 				Spec: v1.ServiceSpec{
 					Ports: []v1.ServicePort{{
@@ -185,7 +183,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "basic-service1",
-					Namespace: "default",
+					Namespace: defaultNS,
 				},
 				Spec: v1.ServiceSpec{
 					Ports: []v1.ServicePort{{
@@ -205,7 +203,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "sctp-service",
-					Namespace: "default",
+					Namespace: defaultNS,
 				},
 				Spec: v1.ServiceSpec{
 					Ports: []v1.ServicePort{{
@@ -225,7 +223,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "with-external-balancer",
-					Namespace: "default",
+					Namespace: defaultNS,
 				},
 				Spec: v1.ServiceSpec{
 					Type:              v1.ServiceTypeLoadBalancer,
@@ -242,7 +240,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "with-external-balancer",
-					Namespace: "default",
+					Namespace: defaultNS,
 				},
 				Spec: v1.ServiceSpec{
 					Ports: []v1.ServicePort{{
@@ -264,7 +262,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "no-external-balancer",
-					Namespace:  "default",
+					Namespace:  defaultNS,
 					Finalizers: []string{servicehelper.LoadBalancerCleanupFinalizer},
 				},
 				Spec: v1.ServiceSpec{
@@ -289,7 +287,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "basic-service1",
-					Namespace: "default",
+					Namespace: defaultNS,
 					DeletionTimestamp: &metav1.Time{
 						Time: time.Now(),
 					},
@@ -321,7 +319,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "basic-service1",
-					Namespace: "default",
+					Namespace: defaultNS,
 				},
 				Spec: v1.ServiceSpec{
 					Ports: []v1.ServicePort{{
@@ -341,7 +339,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 			service: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "basic-service1",
-					Namespace:  "default",
+					Namespace:  defaultNS,
 					Finalizers: []string{servicehelper.LoadBalancerCleanupFinalizer},
 				},
 				Spec: v1.ServiceSpec{
@@ -548,7 +546,7 @@ func TestUpdateNodesInExternalLoadBalancer(t *testing.T) {
 			controller, cloud, _ := newController()
 			controller.nodeLister = newFakeNodeLister(nil, nodes...)
 
-			if servicesToRetry := controller.updateLoadBalancerHosts(ctx, item.services, item.workers); servicesToRetry != nil {
+			if servicesToRetry := controller.updateLoadBalancerHosts(ctx, item.services, item.workers); len(servicesToRetry) != 0 {
 				t.Errorf("for case %q, unexpected servicesToRetry: %v", item.desc, servicesToRetry)
 			}
 			compareUpdateCalls(t, item.expectedUpdateCalls, cloud.UpdateCalls)
@@ -569,6 +567,11 @@ func TestNodeChangesInExternalLoadBalancer(t *testing.T) {
 		newService("s4", "123", v1.ServiceTypeLoadBalancer),
 	}
 
+	var serviceNames []string
+	for _, svc := range services {
+		serviceNames = append(serviceNames, fmt.Sprintf("%s/%s", svc.GetObjectMeta().GetNamespace(), svc.GetObjectMeta().GetName()))
+	}
+
 	controller, cloud, _ := newController()
 	for _, tc := range []struct {
 		desc                  string
@@ -576,7 +579,7 @@ func TestNodeChangesInExternalLoadBalancer(t *testing.T) {
 		expectedUpdateCalls   []fakecloud.UpdateBalancerCall
 		worker                int
 		nodeListerErr         error
-		expectedRetryServices []*v1.Service
+		expectedRetryServices []string
 	}{
 		{
 			desc:  "only 1 node",
@@ -589,7 +592,7 @@ func TestNodeChangesInExternalLoadBalancer(t *testing.T) {
 			},
 			worker:                3,
 			nodeListerErr:         nil,
-			expectedRetryServices: []*v1.Service{},
+			expectedRetryServices: []string{},
 		},
 		{
 			desc:  "2 nodes",
@@ -602,7 +605,7 @@ func TestNodeChangesInExternalLoadBalancer(t *testing.T) {
 			},
 			worker:                1,
 			nodeListerErr:         nil,
-			expectedRetryServices: []*v1.Service{},
+			expectedRetryServices: []string{},
 		},
 		{
 			desc:  "4 nodes",
@@ -615,7 +618,7 @@ func TestNodeChangesInExternalLoadBalancer(t *testing.T) {
 			},
 			worker:                3,
 			nodeListerErr:         nil,
-			expectedRetryServices: []*v1.Service{},
+			expectedRetryServices: []string{},
 		},
 		{
 			desc:                  "error occur during sync",
@@ -623,7 +626,7 @@ func TestNodeChangesInExternalLoadBalancer(t *testing.T) {
 			expectedUpdateCalls:   []fakecloud.UpdateBalancerCall{},
 			worker:                3,
 			nodeListerErr:         fmt.Errorf("random error"),
-			expectedRetryServices: services,
+			expectedRetryServices: serviceNames,
 		},
 		{
 			desc:                  "error occur during sync with 1 workers",
@@ -631,42 +634,38 @@ func TestNodeChangesInExternalLoadBalancer(t *testing.T) {
 			expectedUpdateCalls:   []fakecloud.UpdateBalancerCall{},
 			worker:                1,
 			nodeListerErr:         fmt.Errorf("random error"),
-			expectedRetryServices: services,
+			expectedRetryServices: serviceNames,
 		},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			controller.nodeLister = newFakeNodeLister(tc.nodeListerErr, tc.nodes...)
-			servicesToRetry := controller.updateLoadBalancerHosts(ctx, services, tc.worker)
-			compareServiceList(t, tc.expectedRetryServices, servicesToRetry)
+			var servicesToRetry []string
+			for key := range controller.updateLoadBalancerHosts(ctx, services, tc.worker) {
+				servicesToRetry = append(servicesToRetry, key)
+			}
+			compareServiceNameList(t, tc.expectedRetryServices, servicesToRetry)
 			compareUpdateCalls(t, tc.expectedUpdateCalls, cloud.UpdateCalls)
 			cloud.UpdateCalls = []fakecloud.UpdateBalancerCall{}
 		})
 	}
 }
 
-// compareServiceList compares if both left and right inputs contains the same service list despite the order.
-func compareServiceList(t *testing.T, left, right []*v1.Service) {
+// compareServiceNameList compares if both left and right inputs contains the same Service name list despite the order.
+func compareServiceNameList(t *testing.T, left, right []string) {
 	if len(left) != len(right) {
 		t.Errorf("expect len(left) == len(right), but got %v != %v", len(left), len(right))
 	}
-
-	mismatch := false
-	for _, l := range left {
-		found := false
-		for _, r := range right {
-			if reflect.DeepEqual(l, r) {
-				found = true
-			}
-		}
-		if !found {
-			mismatch = true
-			break
-		}
+	if len(left) == 0 {
+		return
 	}
-	if mismatch {
-		t.Errorf("expected service list to match, expected %+v, got %+v", left, right)
+
+	sort.Strings(left)
+	sort.Strings(right)
+
+	if !reflect.DeepEqual(left, right) {
+		t.Errorf("expected service name list to match, expected %v, got %v", left, right)
 	}
 }
 
@@ -694,171 +693,19 @@ func compareUpdateCalls(t *testing.T, left, right []fakecloud.UpdateBalancerCall
 	}
 }
 
-func TestProcessServiceCreateOrUpdate(t *testing.T) {
-	controller, _, client := newController()
-
-	//A pair of old and new loadbalancer IP address
-	oldLBIP := "192.168.1.1"
-	newLBIP := "192.168.1.11"
-
-	testCases := []struct {
-		testName   string
-		key        string
-		updateFn   func(*v1.Service) *v1.Service //Manipulate the structure
-		svc        *v1.Service
-		expectedFn func(*v1.Service, error) error //Error comparison function
-	}{
-		{
-			testName: "If updating a valid service",
-			key:      "validKey",
-			svc:      defaultExternalService(),
-			updateFn: func(svc *v1.Service) *v1.Service {
-
-				controller.cache.getOrCreate("validKey")
-				return svc
-
-			},
-			expectedFn: func(svc *v1.Service, err error) error {
-				return err
-			},
-		},
-		{
-			testName: "If Updating Loadbalancer IP",
-			key:      "default/sync-test-name",
-			svc:      newService("sync-test-name", types.UID("sync-test-uid"), v1.ServiceTypeLoadBalancer),
-			updateFn: func(svc *v1.Service) *v1.Service {
-
-				svc.Spec.LoadBalancerIP = oldLBIP
-
-				keyExpected := svc.GetObjectMeta().GetNamespace() + "/" + svc.GetObjectMeta().GetName()
-				controller.enqueueService(svc)
-				cachedServiceTest := controller.cache.getOrCreate(keyExpected)
-				cachedServiceTest.state = svc
-				controller.cache.set(keyExpected, cachedServiceTest)
-
-				keyGot, quit := controller.queue.Get()
-				if quit {
-					t.Fatalf("get no queue element")
-				}
-				if keyExpected != keyGot.(string) {
-					t.Fatalf("get service key error, expected: %s, got: %s", keyExpected, keyGot.(string))
-				}
-
-				newService := svc.DeepCopy()
-
-				newService.Spec.LoadBalancerIP = newLBIP
-				return newService
-
-			},
-			expectedFn: func(svc *v1.Service, err error) error {
-
-				if err != nil {
-					return err
-				}
-
-				keyExpected := svc.GetObjectMeta().GetNamespace() + "/" + svc.GetObjectMeta().GetName()
-
-				cachedServiceGot, exist := controller.cache.get(keyExpected)
-				if !exist {
-					return fmt.Errorf("update service error, queue should contain service: %s", keyExpected)
-				}
-				if cachedServiceGot.state.Spec.LoadBalancerIP != newLBIP {
-					return fmt.Errorf("update LoadBalancerIP error, expected: %s, got: %s", newLBIP, cachedServiceGot.state.Spec.LoadBalancerIP)
-				}
-				return nil
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		newSvc := tc.updateFn(tc.svc)
-		if _, err := client.CoreV1().Services(tc.svc.Namespace).Create(ctx, tc.svc, metav1.CreateOptions{}); err != nil {
-			t.Fatalf("Failed to prepare service %s for testing: %v", tc.key, err)
-		}
-		obtErr := controller.processServiceCreateOrUpdate(ctx, newSvc, tc.key)
-		if err := tc.expectedFn(newSvc, obtErr); err != nil {
-			t.Errorf("%v processServiceCreateOrUpdate() %v", tc.testName, err)
-		}
-	}
-
-}
-
-// TestProcessServiceCreateOrUpdateK8sError tests processServiceCreateOrUpdate
-// with various kubernetes errors when patching status.
-func TestProcessServiceCreateOrUpdateK8sError(t *testing.T) {
-	svcName := "svc-k8s-err"
-	conflictErr := apierrors.NewConflict(schema.GroupResource{}, svcName, errors.New("object conflict"))
-	notFoundErr := apierrors.NewNotFound(schema.GroupResource{}, svcName)
-
-	testCases := []struct {
-		desc      string
-		k8sErr    error
-		expectErr error
-	}{
-		{
-			desc:      "conflict error",
-			k8sErr:    conflictErr,
-			expectErr: fmt.Errorf("failed to update load balancer status: %v", conflictErr),
-		},
-		{
-			desc:      "not found error",
-			k8sErr:    notFoundErr,
-			expectErr: nil,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.desc, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			svc := newService(svcName, types.UID("123"), v1.ServiceTypeLoadBalancer)
-			// Preset finalizer so k8s error only happens when patching status.
-			svc.Finalizers = []string{servicehelper.LoadBalancerCleanupFinalizer}
-			controller, _, client := newController()
-			client.PrependReactor("patch", "services", func(action core.Action) (bool, runtime.Object, error) {
-				return true, nil, tc.k8sErr
-			})
-
-			if err := controller.processServiceCreateOrUpdate(ctx, svc, svcName); !reflect.DeepEqual(err, tc.expectErr) {
-				t.Fatalf("processServiceCreateOrUpdate() = %v, want %v", err, tc.expectErr)
-			}
-			if tc.expectErr == nil {
-				return
-			}
-
-			errMsg := "Error syncing load balancer"
-			if gotEvent := func() bool {
-				events := controller.eventRecorder.(*record.FakeRecorder).Events
-				for len(events) > 0 {
-					e := <-events
-					if strings.Contains(e, errMsg) {
-						return true
-					}
-				}
-				return false
-			}(); !gotEvent {
-				t.Errorf("processServiceCreateOrUpdate() = can't find sync error event, want event contains %q", errMsg)
-			}
-		})
-	}
-
-}
-
 func TestSyncService(t *testing.T) {
 
 	var controller *Controller
 
 	testCases := []struct {
-		testName   string
+		desc       string
 		key        string
 		updateFn   func()            //Function to manipulate the controller element to simulate error
 		expectedFn func(error) error //Expected function if returns nil then test passed, failed otherwise
 	}{
 		{
-			testName: "if an invalid service name is synced",
-			key:      "invalid/key/string",
+			desc: "if an invalid service name is synced",
+			key:  "invalid/key/string",
 			updateFn: func() {
 				controller, _, _ = newController()
 			},
@@ -875,11 +722,11 @@ func TestSyncService(t *testing.T) {
 		},
 		/* We cannot open this test case as syncService(key) currently runtime.HandleError(err) and suppresses frequently occurring errors
 		{
-			testName: "if an invalid service is synced",
+			desc: "if an invalid service is synced",
 			key: "somethingelse",
 			updateFn: func() {
 				controller, _, _ = newController()
-				srv := controller.cache.getOrCreate("external-balancer")
+				srv := controller.cache.getOrCreate(defaultService)
 				srv.state = defaultExternalService()
 			},
 			expectedErr: fmt.Errorf("service somethingelse not in cache even though the watcher thought it was. Ignoring the deletion."),
@@ -888,14 +735,12 @@ func TestSyncService(t *testing.T) {
 
 		//TODO: see if we can add a test for valid but error throwing service, its difficult right now because synCService() currently runtime.HandleError
 		{
-			testName: "if valid service",
-			key:      "external-balancer",
+			desc: "if valid service",
+			key:  defaultService,
 			updateFn: func() {
 				testSvc := defaultExternalService()
 				controller, _, _ = newController()
 				controller.enqueueService(testSvc)
-				svc := controller.cache.getOrCreate("external-balancer")
-				svc.state = testSvc
 			},
 			expectedFn: func(e error) error {
 				//error should be nil
@@ -908,106 +753,25 @@ func TestSyncService(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		t.Run(tc.desc, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		tc.updateFn()
-		obtainedErr := controller.syncService(ctx, tc.key)
+			tc.updateFn()
+			obtainedErr := controller.syncService(ctx, tc.key)
 
-		//expected matches obtained ??.
-		if exp := tc.expectedFn(obtainedErr); exp != nil {
-			t.Errorf("%v Error:%v", tc.testName, exp)
-		}
+			// expected matches obtained ??.
+			if exp := tc.expectedFn(obtainedErr); exp != nil {
+				t.Errorf("%v Error:%v", tc.desc, exp)
+			}
 
-		//Post processing, the element should not be in the sync queue.
-		_, exist := controller.cache.get(tc.key)
-		if exist {
-			t.Fatalf("%v working Queue should be empty, but contains %s", tc.testName, tc.key)
-		}
+			// Post processing, the element should not be in the sync queue.
+			if keyExistInQueue(controller.queue, tc.key) {
+				t.Fatalf("%v working Queue should be empty, but contains %s", tc.desc, tc.key)
+			}
+		})
+
 	}
-}
-
-func TestProcessServiceDeletion(t *testing.T) {
-
-	var controller *Controller
-	var cloud *fakecloud.Cloud
-	// Add a global svcKey name
-	svcKey := "external-balancer"
-
-	testCases := []struct {
-		testName   string
-		updateFn   func(*Controller)        // Update function used to manipulate srv and controller values
-		expectedFn func(svcErr error) error // Function to check if the returned value is expected
-	}{
-		{
-			testName: "If a non-existent service is deleted",
-			updateFn: func(controller *Controller) {
-				// Does not do anything
-			},
-			expectedFn: func(svcErr error) error {
-				return svcErr
-			},
-		},
-		{
-			testName: "If cloudprovided failed to delete the service",
-			updateFn: func(controller *Controller) {
-
-				svc := controller.cache.getOrCreate(svcKey)
-				svc.state = defaultExternalService()
-				cloud.Err = fmt.Errorf("error Deleting the Loadbalancer")
-
-			},
-			expectedFn: func(svcErr error) error {
-
-				expectedError := "error Deleting the Loadbalancer"
-
-				if svcErr == nil || svcErr.Error() != expectedError {
-					return fmt.Errorf("Expected=%v Obtained=%v", expectedError, svcErr)
-				}
-
-				return nil
-			},
-		},
-		{
-			testName: "If delete was successful",
-			updateFn: func(controller *Controller) {
-
-				testSvc := defaultExternalService()
-				controller.enqueueService(testSvc)
-				svc := controller.cache.getOrCreate(svcKey)
-				svc.state = testSvc
-				controller.cache.set(svcKey, svc)
-
-			},
-			expectedFn: func(svcErr error) error {
-				if svcErr != nil {
-					return fmt.Errorf("Expected=nil Obtained=%v", svcErr)
-				}
-
-				// It should no longer be in the workqueue.
-				_, exist := controller.cache.get(svcKey)
-				if exist {
-					return fmt.Errorf("delete service error, queue should not contain service: %s any more", svcKey)
-				}
-
-				return nil
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		//Create a new controller.
-		controller, cloud, _ = newController()
-		tc.updateFn(controller)
-		obtainedErr := controller.processServiceDeletion(ctx, svcKey)
-		if err := tc.expectedFn(obtainedErr); err != nil {
-			t.Errorf("%v processServiceDeletion() %v", tc.testName, err)
-		}
-	}
-
 }
 
 // Test cases:
@@ -1183,7 +947,7 @@ func TestNeedsUpdate(t *testing.T) {
 				oldSvc = &v1.Service{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "tcp-service",
-						Namespace: "default",
+						Namespace: defaultNS,
 					},
 					Spec: v1.ServiceSpec{
 						Ports: []v1.ServicePort{{
@@ -1205,7 +969,7 @@ func TestNeedsUpdate(t *testing.T) {
 				oldSvc = &v1.Service{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "tcp-service",
-						Namespace: "default",
+						Namespace: defaultNS,
 					},
 					Spec: v1.ServiceSpec{
 						Ports: []v1.ServicePort{{
@@ -1229,116 +993,6 @@ func TestNeedsUpdate(t *testing.T) {
 		obtainedResult := controller.needsUpdate(oldSvc, newSvc)
 		if obtainedResult != tc.expectedNeedsUpdate {
 			t.Errorf("%v needsUpdate() should have returned %v but returned %v", tc.testName, tc.expectedNeedsUpdate, obtainedResult)
-		}
-	}
-}
-
-//All the test cases for ServiceCache uses a single cache, these below test cases should be run in order,
-//as tc1 (addCache would add elements to the cache)
-//and tc2 (delCache would remove element from the cache without it adding automatically)
-//Please keep this in mind while adding new test cases.
-func TestServiceCache(t *testing.T) {
-
-	//ServiceCache a common service cache for all the test cases
-	sc := &serviceCache{serviceMap: make(map[string]*cachedService)}
-
-	testCases := []struct {
-		testName     string
-		setCacheFn   func()
-		checkCacheFn func() error
-	}{
-		{
-			testName: "Add",
-			setCacheFn: func() {
-				cS := sc.getOrCreate("addTest")
-				cS.state = defaultExternalService()
-			},
-			checkCacheFn: func() error {
-				//There must be exactly one element
-				if len(sc.serviceMap) != 1 {
-					return fmt.Errorf("Expected=1 Obtained=%d", len(sc.serviceMap))
-				}
-				return nil
-			},
-		},
-		{
-			testName: "Del",
-			setCacheFn: func() {
-				sc.delete("addTest")
-
-			},
-			checkCacheFn: func() error {
-				//Now it should have no element
-				if len(sc.serviceMap) != 0 {
-					return fmt.Errorf("Expected=0 Obtained=%d", len(sc.serviceMap))
-				}
-				return nil
-			},
-		},
-		{
-			testName: "Set and Get",
-			setCacheFn: func() {
-				sc.set("addTest", &cachedService{state: defaultExternalService()})
-			},
-			checkCacheFn: func() error {
-				//Now it should have one element
-				Cs, bool := sc.get("addTest")
-				if !bool {
-					return fmt.Errorf("is Available Expected=true Obtained=%v", bool)
-				}
-				if Cs == nil {
-					return fmt.Errorf("cachedService expected:non-nil Obtained=nil")
-				}
-				return nil
-			},
-		},
-		{
-			testName: "ListKeys",
-			setCacheFn: func() {
-				//Add one more entry here
-				sc.set("addTest1", &cachedService{state: defaultExternalService()})
-			},
-			checkCacheFn: func() error {
-				//It should have two elements
-				keys := sc.ListKeys()
-				if len(keys) != 2 {
-					return fmt.Errorf("elements Expected=2 Obtained=%v", len(keys))
-				}
-				return nil
-			},
-		},
-		{
-			testName:   "GetbyKeys",
-			setCacheFn: nil, //Nothing to set
-			checkCacheFn: func() error {
-				//It should have two elements
-				svc, isKey, err := sc.GetByKey("addTest")
-				if svc == nil || isKey == false || err != nil {
-					return fmt.Errorf("Expected(non-nil, true, nil) Obtained(%v,%v,%v)", svc, isKey, err)
-				}
-				return nil
-			},
-		},
-		{
-			testName:   "allServices",
-			setCacheFn: nil, //Nothing to set
-			checkCacheFn: func() error {
-				//It should return two elements
-				svcArray := sc.allServices()
-				if len(svcArray) != 2 {
-					return fmt.Errorf("Expected(2) Obtained(%v)", len(svcArray))
-				}
-				return nil
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		if tc.setCacheFn != nil {
-			tc.setCacheFn()
-		}
-		if err := tc.checkCacheFn(); err != nil {
-			t.Errorf("%v returned %v", tc.testName, err)
 		}
 	}
 }
@@ -1879,4 +1533,24 @@ func (l *fakeNodeLister) Get(name string) (*v1.Node, error) {
 		}
 	}
 	return nil, nil
+}
+
+// keyExistInQueue checks if Service key exists in the queue.
+func keyExistInQueue(q workqueue.RateLimitingInterface, key string) bool {
+	len := q.Len()
+	if len == 0 {
+		return false
+	}
+
+	defer q.Done(key)
+	for i := 0; i < len; i++ {
+		svc, quit := q.Get()
+		if quit {
+			return false
+		}
+		if key == svc.(string) {
+			return true
+		}
+	}
+	return false
 }
