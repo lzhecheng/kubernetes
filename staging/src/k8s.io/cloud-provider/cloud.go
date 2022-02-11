@@ -218,6 +218,8 @@ type Route struct {
 	Name string
 	// TargetNode is the NodeName of the target instance.
 	TargetNode types.NodeName
+	// TargetNodeAddresses are the Node IPs of the target Node.
+	TargetNodeAddresses []v1.NodeAddress
 	// DestinationCIDR is the CIDR format IP range that this routing rule
 	// applies to.
 	DestinationCIDR string
