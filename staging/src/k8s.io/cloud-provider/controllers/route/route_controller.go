@@ -137,7 +137,6 @@ func (rc *RouteController) reconcileNodeRoutes(ctx context.Context) error {
 }
 
 func (rc *RouteController) reconcile(ctx context.Context, nodes []*v1.Node, routes []*cloudprovider.Route) error {
-	var l sync.Mutex
 	// for each node a map of podCIDRs and their created status
 	nodeRoutesStatuses := make(map[types.NodeName]map[string]bool)
 	// routeMap maps routeTargetNode->route
@@ -161,20 +160,14 @@ func (rc *RouteController) reconcile(ctx context.Context, nodes []*v1.Node, rout
 
 		nodeAddressMap[types.NodeName(node.Name)] = node.Status.Addresses
 		nodeName := types.NodeName(node.Name)
-		l.Lock()
 		nodeRoutesStatuses[nodeName] = make(map[string]bool)
-		l.Unlock()
 		// for every node, for every cidr
 		for _, podCIDR := range node.Spec.PodCIDRs {
 			// we add it to our nodeCIDRs map here because add and delete go routines run at the same time
-			l.Lock()
 			nodeRoutesStatuses[nodeName][podCIDR] = false
-			l.Unlock()
 			// ignore if already created
 			if hasRoute(routeMap, nodeName, podCIDR, node.Status.Addresses) {
-				l.Lock()
 				nodeRoutesStatuses[nodeName][podCIDR] = true // a route for this podCIDR is already created
-				l.Unlock()
 				continue
 			}
 		}
@@ -182,9 +175,6 @@ func (rc *RouteController) reconcile(ctx context.Context, nodes []*v1.Node, rout
 
 	// searches our bag of node->cidrs for a match
 	checkRouteStatus := func(nodeName types.NodeName, cidr string, addrs []v1.NodeAddress) bool {
-		l.Lock()
-		defer l.Unlock()
-
 		nodeRoutes := nodeRoutesStatuses[nodeName]
 		if nodeRoutes == nil {
 			return false
@@ -229,9 +219,7 @@ func (rc *RouteController) reconcile(ctx context.Context, nodes []*v1.Node, rout
 
 		// for every node, for every cidr
 		for _, podCIDR := range node.Spec.PodCIDRs {
-			l.Lock()
 			status := nodeRoutesStatuses[nodeName][podCIDR]
-			l.Unlock()
 			if status {
 				continue
 			}
@@ -271,9 +259,7 @@ func (rc *RouteController) reconcile(ctx context.Context, nodes []*v1.Node, rout
 							return err
 						}
 					}
-					l.Lock()
 					nodeRoutesStatuses[nodeName][route.DestinationCIDR] = true
-					l.Unlock()
 					klog.Infof("Created route for node %s %s with hint %s after %v", nodeName, route.DestinationCIDR, nameHint, time.Since(startTime))
 					return nil
 				})
