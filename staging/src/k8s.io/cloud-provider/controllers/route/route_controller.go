@@ -154,13 +154,12 @@ func (rc *RouteController) reconcile(ctx context.Context, nodes []*v1.Node, rout
 
 	nodeAddressMap := map[types.NodeName][]v1.NodeAddress{}
 	for _, node := range nodes {
-		nodeAddressMap[types.NodeName(node.Name)] = node.Status.Addresses
-	}
-	for _, node := range nodes {
 		// Skip if the node hasn't been assigned a CIDR yet.
 		if len(node.Spec.PodCIDRs) == 0 {
 			continue
 		}
+
+		nodeAddressMap[types.NodeName(node.Name)] = node.Status.Addresses
 		nodeName := types.NodeName(node.Name)
 		l.Lock()
 		nodeRoutesStatuses[nodeName] = make(map[string]bool)
@@ -172,10 +171,68 @@ func (rc *RouteController) reconcile(ctx context.Context, nodes []*v1.Node, rout
 			nodeRoutesStatuses[nodeName][podCIDR] = false
 			l.Unlock()
 			// ignore if already created
-			if hasRoute(routeMap, nodeName, podCIDR, nodeAddressMap) {
+			if hasRoute(routeMap, nodeName, podCIDR, node.Status.Addresses) {
 				l.Lock()
 				nodeRoutesStatuses[nodeName][podCIDR] = true // a route for this podCIDR is already created
 				l.Unlock()
+				continue
+			}
+		}
+	}
+
+	// searches our bag of node->cidrs for a match
+	checkRouteStatus := func(nodeName types.NodeName, cidr string, addrs []v1.NodeAddress) bool {
+		l.Lock()
+		defer l.Unlock()
+
+		nodeRoutes := nodeRoutesStatuses[nodeName]
+		if nodeRoutes == nil {
+			return false
+		}
+		_, exist := nodeRoutes[cidr]
+		if !exist {
+			return false
+		}
+		return haveSameNodeAddrs(addrs, nodeAddressMap[nodeName])
+	}
+	// delete routes that are not in use
+	for _, route := range routes {
+		if rc.isResponsibleForRoute(route) {
+			// Check if this route is a blackhole, or applies to a node we know about & CIDR status is created.
+			if route.Blackhole || !checkRouteStatus(route.TargetNode, route.DestinationCIDR, route.TargetNodeAddresses) {
+				wg.Add(1)
+				// Delete the route.
+				go func(route *cloudprovider.Route, startTime time.Time) {
+					defer wg.Done()
+					// respect the rate limiter
+					rateLimiter <- struct{}{}
+					klog.Infof("Deleting route %s %s", route.Name, route.DestinationCIDR)
+					if err := rc.routes.DeleteRoute(ctx, rc.clusterName, route); err != nil {
+						klog.Errorf("Could not delete route %s %s after %v: %v", route.Name, route.DestinationCIDR, time.Since(startTime), err)
+					} else {
+						klog.Infof("Deleted route %s %s after %v", route.Name, route.DestinationCIDR, time.Since(startTime))
+					}
+					<-rateLimiter
+				}(route, time.Now())
+			}
+		}
+	}
+	wg.Wait()
+
+	// Now create new routes or update existing ones.
+	for _, node := range nodes {
+		// Skip if the node hasn't been assigned a CIDR yet.
+		if len(node.Spec.PodCIDRs) == 0 {
+			continue
+		}
+		nodeName := types.NodeName(node.Name)
+
+		// for every node, for every cidr
+		for _, podCIDR := range node.Spec.PodCIDRs {
+			l.Lock()
+			status := nodeRoutesStatuses[nodeName][podCIDR]
+			l.Unlock()
+			if status {
 				continue
 			}
 			// if we are here, then a route needs to be created for this node
@@ -224,44 +281,6 @@ func (rc *RouteController) reconcile(ctx context.Context, nodes []*v1.Node, rout
 					klog.Errorf("Could not create route %s %s for node %s: %v", nameHint, route.DestinationCIDR, nodeName, err)
 				}
 			}(nodeName, nameHint, route)
-		}
-	}
-
-	// searches our bag of node->cidrs for a match
-	checkRouteStatus := func(nodeName types.NodeName, cidr string, addrs []v1.NodeAddress) bool {
-		l.Lock()
-		defer l.Unlock()
-
-		nodeRoutes := nodeRoutesStatuses[nodeName]
-		if nodeRoutes == nil {
-			return false
-		}
-		_, exist := nodeRoutes[cidr]
-		if !exist {
-			return false
-		}
-		return haveSameNodeAddrs(addrs, nodeAddressMap[nodeName])
-	}
-	// delete routes that are not in use
-	for _, route := range routes {
-		if rc.isResponsibleForRoute(route) {
-			// Check if this route is a blackhole, or applies to a node we know about & CIDR status is created.
-			if route.Blackhole || !checkRouteStatus(route.TargetNode, route.DestinationCIDR, route.TargetNodeAddresses) {
-				wg.Add(1)
-				// Delete the route.
-				go func(route *cloudprovider.Route, startTime time.Time) {
-					defer wg.Done()
-					// respect the rate limiter
-					rateLimiter <- struct{}{}
-					klog.Infof("Deleting route %s %s", route.Name, route.DestinationCIDR)
-					if err := rc.routes.DeleteRoute(ctx, rc.clusterName, route); err != nil {
-						klog.Errorf("Could not delete route %s %s after %v: %v", route.Name, route.DestinationCIDR, time.Since(startTime), err)
-					} else {
-						klog.Infof("Deleted route %s %s after %v", route.Name, route.DestinationCIDR, time.Since(startTime))
-					}
-					<-rateLimiter
-				}(route, time.Now())
-			}
 		}
 	}
 	wg.Wait()
@@ -371,14 +390,14 @@ func (rc *RouteController) isResponsibleForRoute(route *cloudprovider.Route) boo
 }
 
 // checks if a node owns a route with a specific cidr and target Node addresses.
-func hasRoute(rm map[types.NodeName][]*cloudprovider.Route, nodeName types.NodeName, cidr string, nodeAddressMap map[types.NodeName][]v1.NodeAddress) bool {
+func hasRoute(rm map[types.NodeName][]*cloudprovider.Route, nodeName types.NodeName, cidr string, realNodeAddrs []v1.NodeAddress) bool {
 	if routes, ok := rm[nodeName]; ok {
 		for _, route := range routes {
 			if route.DestinationCIDR == cidr {
-				if haveSameNodeAddrs(nodeAddressMap[route.TargetNode], route.TargetNodeAddresses) {
+				if haveSameNodeAddrs(realNodeAddrs, route.TargetNodeAddresses) {
 					return true
 				}
-				klog.Warningf("Node addresses have changed from %v to %v", route.TargetNodeAddresses, nodeAddressMap[route.TargetNode])
+				klog.Warningf("Node addresses have changed from %v to %v", route.TargetNodeAddresses, realNodeAddrs)
 			}
 		}
 	}
