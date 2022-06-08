@@ -19,6 +19,7 @@ package node
 import (
 	"context"
 	"fmt"
+
 	"k8s.io/pod-security-admission/api"
 
 	v1 "k8s.io/api/core/v1"
@@ -87,14 +88,14 @@ var _ = SIGDescribe("RuntimeClass", func() {
 			Tolerations:  tolerations,
 		}
 
-		ginkgo.By("Trying to apply a label on the found node.")
+		ginkgo.By(fmt.Sprintf("Trying to apply a label on the found node %q.", nodeName))
 		for key, value := range nodeSelector {
 			framework.AddOrUpdateLabelOnNode(f.ClientSet, nodeName, key, value)
 			framework.ExpectNodeHasLabel(f.ClientSet, nodeName, key, value)
 			defer framework.RemoveLabelOffNode(f.ClientSet, nodeName, key)
 		}
 
-		ginkgo.By("Trying to apply taint on the found node.")
+		ginkgo.By(fmt.Sprintf("Trying to apply taint on the found node %q.", nodeName))
 		taint := v1.Taint{
 			Key:    labelFooName,
 			Value:  "bar",

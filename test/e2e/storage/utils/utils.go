@@ -216,13 +216,14 @@ func TestVolumeUnmapsFromDeletedPodWithForceOption(c clientset.Interface, f *fra
 
 	// Creating command to check whether path exists
 	podDirectoryCmd := fmt.Sprintf("ls /var/lib/kubelet/pods/%s/volumeDevices/*/ | grep '.'", clientPod.UID)
-	if isSudoPresent(nodeIP, framework.TestContext.Provider) {
+	sudoPresent := isSudoPresent(nodeIP, framework.TestContext.Provider)
+	if sudoPresent {
 		podDirectoryCmd = fmt.Sprintf("sudo sh -c \"%s\"", podDirectoryCmd)
 	}
 	// Directories in the global directory have unpredictable names, however, device symlinks
 	// have the same name as pod.UID. So just find anything with pod.UID name.
 	globalBlockDirectoryCmd := fmt.Sprintf("find /var/lib/kubelet/plugins -name %s", clientPod.UID)
-	if isSudoPresent(nodeIP, framework.TestContext.Provider) {
+	if sudoPresent {
 		globalBlockDirectoryCmd = fmt.Sprintf("sudo sh -c \"%s\"", globalBlockDirectoryCmd)
 	}
 
@@ -418,6 +419,16 @@ func isSudoPresent(nodeIP string, provider string) bool {
 		return true
 	}
 	return false
+}
+
+func IsSSHWorking(provider string) (bool, error) {
+	_, err := e2essh.GetSigner(provider)
+	if err == nil {
+		return true, nil
+	} else if strings.Contains(err.Error(), "GetSigner(...) not implemented") {
+		return false, nil
+	}
+	return false, err
 }
 
 // CheckReadWriteToPath check that path can b e read and written

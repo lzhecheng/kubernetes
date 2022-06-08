@@ -74,6 +74,12 @@ func (s *disruptiveTestSuite) SkipUnsupportedTests(driver storageframework.TestD
 }
 
 func (s *disruptiveTestSuite) DefineTests(driver storageframework.TestDriver, pattern storageframework.TestPattern) {
+	sshWorking, err := utils.IsSSHWorking(framework.TestContext.Provider)
+	framework.ExpectNoError(err)
+	if !sshWorking {
+		e2eskipper.Skipf("Skipping because SSH not working on provider %q", framework.TestContext.Provider)
+	}
+
 	type local struct {
 		config        *storageframework.PerTestConfig
 		driverCleanup func()

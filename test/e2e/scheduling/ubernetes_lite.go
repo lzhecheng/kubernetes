@@ -130,7 +130,7 @@ func SpreadServiceOrFail(f *framework.Framework, replicaCount int, image string)
 	framework.ExpectNoError(err)
 
 	// Now make sure they're spread across zones
-	zoneNames, err := e2enode.GetClusterZones(f.ClientSet)
+	zoneNames, err := e2enode.GetSchedulableClusterZones(f.ClientSet)
 	framework.ExpectNoError(err)
 	checkZoneSpreading(f.ClientSet, pods, zoneNames.List())
 }
@@ -148,7 +148,7 @@ func getZoneNameForNode(node v1.Node) (string, error) {
 
 // Return the number of zones in which we have nodes in this cluster.
 func getZoneCount(c clientset.Interface) (int, error) {
-	zoneNames, err := e2enode.GetClusterZones(c)
+	zoneNames, err := e2enode.GetSchedulableClusterZones(c)
 	if err != nil {
 		return -1, err
 	}
