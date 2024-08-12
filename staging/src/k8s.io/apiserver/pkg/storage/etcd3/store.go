@@ -733,6 +733,10 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 			}
 			lastKey = kv.Key
 
+			// if !strings.HasPrefix(string(kv.Key), "/registry/secrets/kube-system/bootstrap-token") {
+			// 	klog.Infof("DEBUG: skip key %s", string(kv.Key))
+			// 	continue
+			// }
 			data, _, err := s.transformer.TransformFromStorage(ctx, kv.Value, authenticatedDataString(kv.Key))
 			if err != nil {
 				return storage.NewInternalErrorf("unable to transform key %q: %v", kv.Key, err)
