@@ -169,7 +169,11 @@ func (p *PolicyData) EnsureRBACPolicy() genericapiserver.PostStartHookFunc {
 				utilruntime.HandleError(fmt.Errorf("unable to initialize client set: %v", err))
 				return false, nil
 			}
-			return ensureRBACPolicy(p, client)
+			done, err0, err1 := ensureRBACPolicy(p, client)
+			if err0 != nil {
+				klog.Errorf("DEBUG: EnsureRBACPolicy err0: %v", err0)
+			}
+			return done, err1
 		})
 		// if we're never able to make it through initialization, kill the API server
 		if err != nil {
@@ -180,28 +184,32 @@ func (p *PolicyData) EnsureRBACPolicy() genericapiserver.PostStartHookFunc {
 	}
 }
 
-func ensureRBACPolicy(p *PolicyData, client clientset.Interface) (done bool, err error) {
+func ensureRBACPolicy(p *PolicyData, client clientset.Interface) (done bool, err0, err error) {
 	failedReconciliation := false
 	// Make sure etcd is responding before we start reconciling
 	if _, err := client.RbacV1().ClusterRoles().List(context.TODO(), metav1.ListOptions{}); err != nil {
-		utilruntime.HandleError(fmt.Errorf("unable to initialize clusterroles: %v", err))
-		return false, nil
+		err0 := fmt.Errorf("unable to initialize clusterroles: %v", err)
+		utilruntime.HandleError(err0)
+		return false, err0, nil
 	}
 	if _, err := client.RbacV1().ClusterRoleBindings().List(context.TODO(), metav1.ListOptions{}); err != nil {
-		utilruntime.HandleError(fmt.Errorf("unable to initialize clusterrolebindings: %v", err))
-		return false, nil
+		err0 := fmt.Errorf("unable to initialize clusterrolebindings: %v", err)
+		utilruntime.HandleError(err0)
+		return false, err0, nil
 	}
 
 	// if the new cluster roles to aggregate do not yet exist, then we need to copy the old roles if they don't exist
 	// in new locations
 	if err := primeAggregatedClusterRoles(p.ClusterRolesToAggregate, client.RbacV1()); err != nil {
-		utilruntime.HandleError(fmt.Errorf("unable to prime aggregated clusterroles: %v", err))
-		return false, nil
+		err0 := fmt.Errorf("unable to prime aggregated clusterroles: %v", err)
+		utilruntime.HandleError(err0)
+		return false, err0, nil
 	}
 
 	if err := primeSplitClusterRoleBindings(p.ClusterRoleBindingsToSplit, client.RbacV1()); err != nil {
-		utilruntime.HandleError(fmt.Errorf("unable to prime split ClusterRoleBindings: %v", err))
-		return false, nil
+		err0 := fmt.Errorf("unable to prime split ClusterRoleBindings: %v", err)
+		utilruntime.HandleError(err0)
+		return false, err0, nil
 	}
 
 	// ensure bootstrap roles are created or reconciled
@@ -333,10 +341,10 @@ func ensureRBACPolicy(p *PolicyData, client clientset.Interface) (done bool, err
 	}
 	// failed to reconcile some objects, retry
 	if failedReconciliation {
-		return false, nil
+		return false, fmt.Errorf("failedReconciliation"), nil
 	}
 
-	return true, nil
+	return true, nil, nil
 }
 
 func (p RESTStorageProvider) GroupName() string {

@@ -439,6 +439,10 @@ func (r *Reflector) watch(w watch.Interface, stopCh <-chan struct{}, resyncerrc 
 				// watch bookmarks, it will ignore this field).
 				AllowWatchBookmarks: true,
 			}
+			if strings.Contains(strings.ToLower(r.typeDescription), "secret") {
+				klog.Info("DEBUG: Using secret field selector in watch")
+				options.FieldSelector = "type=bootstrap.kubernetes.io/token"
+			}
 
 			w, err = r.listerWatcher.Watch(options)
 			if err != nil {
@@ -494,6 +498,10 @@ func (r *Reflector) watch(w watch.Interface, stopCh <-chan struct{}, resyncerrc 
 func (r *Reflector) list(stopCh <-chan struct{}) error {
 	var resourceVersion string
 	options := metav1.ListOptions{ResourceVersion: r.relistResourceVersion()}
+	if strings.Contains(strings.ToLower(r.typeDescription), "secret") {
+		klog.Info("DEBUG: Using secret field selector")
+		options.FieldSelector = "type=bootstrap.kubernetes.io/token"
+	}
 
 	initTrace := trace.New("Reflector ListAndWatch", trace.Field{Key: "name", Value: r.name})
 	defer initTrace.LogIfLong(10 * time.Second)
@@ -511,6 +519,7 @@ func (r *Reflector) list(stopCh <-chan struct{}) error {
 		// Attempt to gather list in chunks, if supported by listerWatcher, if not, the first
 		// list request will return the full response.
 		pager := pager.New(pager.SimplePageFunc(func(opts metav1.ListOptions) (runtime.Object, error) {
+			klog.Infof("DEBUG: opts: %v", opts)
 			return r.listerWatcher.List(opts)
 		}))
 		switch {
@@ -536,6 +545,7 @@ func (r *Reflector) list(stopCh <-chan struct{}) error {
 			pager.PageSize = 0
 		}
 
+		klog.Infof("DEBUG: go with pager.ListWithAlloc: options %v", options)
 		list, paginatedResult, err = pager.ListWithAlloc(context.Background(), options)
 		if isExpiredError(err) || isTooLargeResourceVersionError(err) {
 			r.setIsLastSyncResourceVersionUnavailable(true)
@@ -545,7 +555,12 @@ func (r *Reflector) list(stopCh <-chan struct{}) error {
 			// resource version it is listing at is expired or the cache may not yet be synced to the provided
 			// resource version. So we need to fallback to resourceVersion="" in all to recover and ensure
 			// the reflector makes forward progress.
-			list, paginatedResult, err = pager.ListWithAlloc(context.Background(), metav1.ListOptions{ResourceVersion: r.relistResourceVersion()})
+			opts := metav1.ListOptions{ResourceVersion: r.relistResourceVersion(), FieldSelector: "type=bootstrap.kubernetes.io/token"}
+			if strings.Contains(strings.ToLower(r.typeDescription), "secret") {
+				klog.Info("DEBUG: Using secret field selector1")
+				opts.FieldSelector = "type=bootstrap.kubernetes.io/token"
+			}
+			list, paginatedResult, err = pager.ListWithAlloc(context.Background(), opts)
 		}
 		close(listCh)
 	}()
@@ -663,6 +678,10 @@ func (r *Reflector) watchList(stopCh <-chan struct{}) (watch.Interface, error) {
 			SendInitialEvents:    pointer.Bool(true),
 			ResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
 			TimeoutSeconds:       &timeoutSeconds,
+		}
+		if strings.Contains(strings.ToLower(r.typeDescription), "secret") {
+			klog.Info("DEBUG: Using secret field selector")
+			options.FieldSelector = "type=bootstrap.kubernetes.io/token"
 		}
 		start := r.clock.Now()
 
