@@ -287,6 +287,12 @@ func (svmc *SVMController) sync(ctx context.Context, key string) error {
 			return err
 		}
 
+		if accessor.GetNamespace() == "default" && accessor.GetName() == "test-svm-conflict" {
+			logger.V(2).Info("DEBUG svm conflict start", "gvr", gvr.String())
+			time.Sleep(time.Minute)
+			logger.V(2).Info("DEBUG svm conflict end", "gvr", gvr.String())
+		}
+
 		_, errPatch := svmc.dynamicClient.Resource(gvr).
 			Namespace(accessor.GetNamespace()).
 			Patch(ctx,
@@ -303,7 +309,7 @@ func (svmc *SVMController) sync(ctx context.Context, key string) error {
 		// - deleted, meaning that migration is not needed
 		// - deleted and recreated, meaning that migration has already been performed
 		if apierrors.IsConflict(errPatch) {
-			logger.V(6).Info("Resource ignored due to conflict", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String(), "err", errPatch)
+			logger.V(2).Info("Resource ignored due to conflict", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String(), "err", errPatch)
 			continue
 		}
 
